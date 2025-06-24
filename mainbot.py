@@ -8,6 +8,8 @@ import asyncio
 import tracemalloc
 import resource
 import aiohttp
+import logging
+import logging.handlers
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy import Column, Integer, select
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -17,6 +19,44 @@ load_dotenv()
 
 # Start tracing Python memory allocations
 tracemalloc.start()
+
+discord_logger = logging.getLogger('discord')
+discord_logger.setLevel(logging.DEBUG)
+logging.getLogger('discord.http').setLevel(logging.INFO)
+
+discord_handler = logging.handlers.RotatingFileHandler(
+    filename='discord.log',
+    encoding='utf-8',
+    maxBytes=32 * 1024 * 1024,
+    backupCount=5
+)
+
+dt_fmt = '%Y-%m-%d %H:%M:%S'
+formatter = logging.Formatter('[{asctime}] [{levelname:<8}] {name}: {message}', dt_fmt, style='{')
+discord_handler.setFormatter(formatter)
+discord_logger.addHandler(discord_handler)
+
+# Bot operations logger setup
+bot_logger = logging.getLogger('bot_operations')
+bot_logger.setLevel(logging.DEBUG)
+
+bot_handler = logging.handlers.RotatingFileHandler(
+    filename='bot_operations.log',
+    encoding='utf-8',
+    maxBytes=32 * 1024 * 1024,  # 32MB
+    backupCount=5
+)
+bot_handler.setLevel(logging.DEBUG)
+
+bot_formatter = logging.Formatter('[{asctime}] [{levelname:<8}] {name}: {message}', dt_fmt, style='{')
+bot_handler.setFormatter(bot_formatter)
+bot_logger.addHandler(bot_handler)
+
+# Also add console handler for bot info and errors
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(bot_formatter)
+bot_logger.addHandler(console_handler)
 
 # Constants
 JSON_URL_1 = 'https://raw.githubusercontent.com/vanshb03/Summer2026-Internships/refs/heads/dev/.github/scripts/listings.json'
@@ -157,7 +197,7 @@ async def get_guild_ping_role(guild_id: int) -> int | None:
             try:
                 return int(row.ping_role_id)
             except (ValueError, TypeError):
-                print(f"Warning: Invalid ping_role_id '{row.ping_role_id}' for guild {guild_id}. Treating as None.")
+                bot_logger.warning(f"Warning: Invalid ping_role_id '{row.ping_role_id}' for guild {guild_id}. Treating as None.")
                 return None
         return None
 
@@ -173,43 +213,43 @@ async def get_all_guild_ping_roles() -> dict[int, int]:
             try:
                 guild_roles[row.guild_id] = int(row.ping_role_id)
             except (ValueError, TypeError):
-                print(f"Warning: Invalid ping_role_id '{row.ping_role_id}' for guild {row.guild_id}. Skipping.")
+                bot_logger.warning(f"Warning: Invalid ping_role_id '{row.ping_role_id}' for guild {row.guild_id}. Skipping.")
         return guild_roles
 
 # --- Repository and JSON Handling ---
 async def fetch_json_from_url(url: str) -> list:
     """Fetch JSON data directly from URL"""
-    print(f"Fetching JSON data from {url}...")
+    bot_logger.debug(f"Fetching JSON data from {url}...")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status == 200:
                     text_data = await response.text()
                     data = json.loads(text_data)
-                    print(f"Successfully fetched {len(data)} items from {url}")
+                    bot_logger.debug(f"Successfully fetched {len(data)} items from {url}")
                     return data
                 else:
-                    print(f"Error fetching {url}: HTTP {response.status}")
+                    bot_logger.error(f"Error fetching {url}: HTTP {response.status}")
                     return []
     except json.JSONDecodeError as e:
-        print(f"Error parsing JSON from {url}: {e}")
+        bot_logger.error(f"Error parsing JSON from {url}: {e}")
         return []
     except Exception as e:
-        print(f"Error fetching JSON from {url}: {e}")
+        bot_logger.error(f"Error fetching JSON from {url}: {e}")
         return []
 
 def read_json(json_file_path):
-    print(f"Reading JSON file from {json_file_path}...")
+    bot_logger.info(f"Reading JSON file from {json_file_path}...")
     try:
         with open(json_file_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
-        print(f"JSON file read successfully from {json_file_path}, {len(data)} items loaded.")
+        bot_logger.info(f"JSON file read successfully from {json_file_path}, {len(data)} items loaded.")
         return data
     except FileNotFoundError:
-        print(f"Error: JSON file not found at {json_file_path}.")
+        bot_logger.error(f"Error: JSON file not found at {json_file_path}.")
         return []
     except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from {json_file_path}.")
+        bot_logger.error(f"Error: Could not decode JSON from {json_file_path}.")
         return []
 
 def _is_value_truthy(value):
@@ -332,24 +372,24 @@ async def send_discord_message(message_content: str, guild_id: int, channel_id: 
     channel_key = f"{guild_id}:{channel_id}"
     
     if channel_key in failed_channels:
-        print(f"Skipping previously failed channel ID {channel_id} in guild {guild_id}")
+        bot_logger.debug(f"Skipping previously failed channel ID {channel_id} in guild {guild_id}")
         return
 
     try:
         channel = client.get_channel(channel_id)
         if channel is None:
-            print(f"Channel {channel_id} not in cache, attempting to fetch...")
+            bot_logger.debug(f"Channel {channel_id} not in cache, attempting to fetch...")
             channel = await client.fetch_channel(channel_id)
 
         if not isinstance(channel, discord.TextChannel): # Check if it's a text channel
-            print(f"Error: Channel ID {channel_id} is not a text channel. Skipping.")
+            bot_logger.error(f"Error: Channel ID {channel_id} is not a text channel. Skipping.")
             # Optionally, add to failed_channels if this is a persistent issue type
             channel_failure_counts[channel_key] = channel_failure_counts.get(channel_key, 0) + MAX_RETRIES # Mark as failed
             failed_channels.add(channel_key)
             return
 
         await channel.send(message_content)
-        print(f"Successfully sent message to channel {channel_id} in guild {guild_id}")
+        bot_logger.debug(f"Successfully sent message to channel {channel_id} in guild {guild_id}")
         if channel_key in channel_failure_counts: # Reset on success
             del channel_failure_counts[channel_key]
         if channel_key in failed_channels: # Also remove from perm failed if successful now
@@ -357,25 +397,25 @@ async def send_discord_message(message_content: str, guild_id: int, channel_id: 
         await asyncio.sleep(1)  # Rate limiting
 
     except discord.NotFound:
-        print(f"Channel {channel_id} not found in guild {guild_id}.")
+        bot_logger.warning(f"Channel {channel_id} not found in guild {guild_id}.")
         channel_failure_counts[channel_key] = channel_failure_counts.get(channel_key, 0) + 1
     except discord.Forbidden:
-        print(f"No permission for channel {channel_id} in guild {guild_id}.")
+        bot_logger.warning(f"No permission for channel {channel_id} in guild {guild_id}.")
         failed_channels.add(channel_key) # Add to permanent failures for permission issues
     except Exception as e:
-        print(f"Error sending message to channel {channel_id} in guild {guild_id}: {e}")
+        bot_logger.error(f"Error sending message to channel {channel_id} in guild {guild_id}: {e}")
         channel_failure_counts[channel_key] = channel_failure_counts.get(channel_key, 0) + 1
     finally:
         # Add to failed_channels if retries exceeded
         if channel_failure_counts.get(channel_key, 0) >= MAX_RETRIES:
-            print(f"Channel {channel_id} in guild {guild_id} has failed {MAX_RETRIES} times, adding to failed channels for this session.")
+            bot_logger.warning(f"Channel {channel_id} in guild {guild_id} has failed {MAX_RETRIES} times, adding to failed channels for this session.")
             failed_channels.add(channel_key)
 
 
 async def send_messages_to_all_configured_channels(message_content: str, guild_ping_roles: dict[int, int] = None):
     channel_configs = await get_all_channels_from_db()
     if not channel_configs:
-        print("No channels configured in the database to send messages to.")
+        bot_logger.info("No channels configured in the database to send messages to.")
         return
 
     if guild_ping_roles is None:
@@ -397,24 +437,24 @@ async def combined_scheduled_task():
     global is_task_running
     
     if is_task_running:
-        print("Previous task still running, skipping this execution")
+        bot_logger.debug("Previous task still running, skipping this execution")
         return
     
     is_task_running = True
-    print(f"Running scheduled check for both repos at {datetime.now()}")
+    bot_logger.debug(f"Running scheduled check for both repos at {datetime.now()}")
     try:
         new_data = await fetch_json_from_url(JSON_URL_1)
         if os.path.exists(PREVIOUS_DATA_FILE):
             try:
                 with open(PREVIOUS_DATA_FILE, 'r', encoding='utf-8') as file:
                     old_data = json.load(file)
-                print(f"Previous data loaded from {PREVIOUS_DATA_FILE}.")
+                bot_logger.debug(f"Previous data loaded from {PREVIOUS_DATA_FILE}.")
             except (FileNotFoundError, json.JSONDecodeError) as e:
-                print(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE}: {e}. Starting fresh.")
+                bot_logger.error(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE}: {e}. Starting fresh.")
                 old_data = []
         else:
             old_data = []
-            print(f"No previous data found at {PREVIOUS_DATA_FILE}. Initializing.")
+            bot_logger.info(f"No previous data found at {PREVIOUS_DATA_FILE}. Initializing.")
 
         await process_repo_updates(new_data, old_data, PREVIOUS_DATA_FILE, JSON_URL_1, is_second_repo=False)
         
@@ -423,29 +463,29 @@ async def combined_scheduled_task():
             try:
                 with open(PREVIOUS_DATA_FILE_2, 'r', encoding='utf-8') as file:
                     old_data_2 = json.load(file)
-                print(f"Previous data loaded from {PREVIOUS_DATA_FILE_2}.")
+                bot_logger.debug(f"Previous data loaded from {PREVIOUS_DATA_FILE_2}.")
             except (FileNotFoundError, json.JSONDecodeError) as e:
-                print(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE_2}: {e}. Starting fresh.")
+                bot_logger.error(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE_2}: {e}. Starting fresh.")
                 old_data_2 = []
         else:
             old_data_2 = []
-            print(f"No previous data found at {PREVIOUS_DATA_FILE_2}. Initializing.")
+            bot_logger.info(f"No previous data found at {PREVIOUS_DATA_FILE_2}. Initializing.")
 
         await process_repo_updates(new_data_2, old_data_2, PREVIOUS_DATA_FILE_2, JSON_URL_2, is_second_repo=True)
         
     except Exception as e:
         is_task_running = False
-        print(f"Error during combined scheduled task: {e}")
+        bot_logger.error(f"Error during combined scheduled task: {e}")
     finally:
         is_task_running = False
-        print(f"Scheduled task completed at {datetime.now()}")
+        bot_logger.debug(f"Scheduled task completed at {datetime.now()}")
 
 def try_start_scheduled_task():
     """Function to start scheduled task only if not already running"""
     if not is_task_running:
         asyncio.create_task(combined_scheduled_task())
     else:
-        print("Scheduled task already running, skipping")
+        bot_logger.debug("Scheduled task already running, skipping")
 
 async def process_repo_updates(new_data, old_data, previous_data_file, repo_url, is_second_repo=False):
     """Process updates for a single repo"""
@@ -498,12 +538,12 @@ async def process_repo_updates(new_data, old_data, previous_data_file, repo_url,
     try:
         with open(previous_data_file, 'w', encoding='utf-8') as file:
             json.dump(new_data, file, indent=2) 
-        print(f"Updated previous data with new data for {previous_data_file}.")
+        bot_logger.debug(f"Updated previous data with new data for {previous_data_file}.")
     except IOError as e:
-        print(f"Error writing previous data file {previous_data_file}: {e}")
+        bot_logger.error(f"Error writing previous data file {previous_data_file}: {e}")
 
     if not new_roles and not deactivated_roles and (not is_second_repo or not reactivated_roles):
-        print(f"No updates found for {repo_url}.")
+        bot_logger.debug(f"No updates found for {repo_url}.")
 
 
 async def background_scheduler():
@@ -521,11 +561,11 @@ async def background_scheduler():
             peak_rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
             peak_rss_display = peak_rss_kb / 1024 if os.uname().sysname == 'Darwin' else peak_rss_kb
             
-            print(f"--- Memory Usage ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ---")
-            print(f"Current Python memory (tracemalloc): {current_mem / 1024:.2f} KB")
-            print(f"Peak Python memory (tracemalloc):    {peak_mem / 1024:.2f} KB")
-            print(f"Peak RSS (OS):                       {peak_rss_display:.2f} KB")
-            print("---------------------------------------------------")
+            bot_logger.debug(f"--- Memory Usage ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ---")
+            bot_logger.debug(f"Current Python memory (tracemalloc): {current_mem / 1024:.2f} KB")
+            bot_logger.debug(f"Peak Python memory (tracemalloc):    {peak_mem / 1024:.2f} KB")
+            bot_logger.debug(f"Peak RSS (OS):                       {peak_rss_display:.2f} KB")
+            bot_logger.debug("---------------------------------------------------")
 
 # --- Slash Commands ---
 @tree.command(name="set_channel", description="Sets the notification channel for this guild (Admin only).")
@@ -534,6 +574,7 @@ async def set_channel_cmd(interaction: discord.Interaction, channel: discord.Tex
     try:
         if channel:
             await set_guild_channel(interaction.guild.id, channel.id)
+            bot_logger.debug(f"Guild {interaction.guild.id} set notification channel to {channel.id}")
             await interaction.response.send_message(f"Notification channel set to {channel.mention}.", ephemeral=True)
         else:
             current_channel_id = await get_guild_channel(interaction.guild.id)
@@ -542,6 +583,7 @@ async def set_channel_cmd(interaction: discord.Interaction, channel: discord.Tex
                 return
                 
             await set_guild_channel(interaction.guild.id, None)
+            bot_logger.debug(f"Guild {interaction.guild.id} removed notification channel.")
             await interaction.response.send_message("Notification channel removed for this guild.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"Error setting channel: {e}", ephemeral=True)
@@ -568,9 +610,11 @@ async def set_ping_role_cmd(interaction: discord.Interaction, role: discord.Role
     try:
         if role:
             await set_guild_ping_role(interaction.guild.id, role.id)
+            bot_logger.debug(f"Guild {interaction.guild.id} set ping role to {role.id}")
             await interaction.response.send_message(f"Ping role set to {role.mention}.", ephemeral=True)
         else:
             await set_guild_ping_role(interaction.guild.id, None) # Explicitly pass None
+            bot_logger.debug(f"Guild {interaction.guild.id} cleared ping role.")
             await interaction.response.send_message("Ping role cleared.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"Error setting ping role: {e}", ephemeral=True)
@@ -599,11 +643,11 @@ async def get_ping_role_cmd(interaction: discord.Interaction):
 async def cleanup_db():
     """Properly close the database engine"""
     await engine.dispose()
-    print("Database engine disposed.")
+    bot_logger.info("Database engine disposed.")
 
 @client.event
 async def on_ready():
-    print(f"Preparing bot: {client.user}...")
+    bot_logger.info(f"Preparing bot: {client.user}...")
     await init_db() # Initialize DB on startup
     
     # Sync slash commands. This can be done globally or per-guild.
@@ -611,28 +655,28 @@ async def on_ready():
     # await tree.sync(guild=discord.Object(id=DISCORD_GUILD_ID)) # Example for guild-specific sync
     await tree.sync() 
     
-    print(f"Logged in as {client.user} (ID: {client.user.id})")
-    print("Command tree synced.")
+    bot_logger.info(f"Logged in as {client.user} (ID: {client.user.id})")
+    bot_logger.info("Command tree synced.")
     
     # List guilds the bot is in
     guild_names = [guild.name for guild in client.guilds]
     if guild_names:
-        print(f"Currently in guilds: {', '.join(guild_names)}")
+        bot_logger.info(f"Currently in guilds: {', '.join(guild_names)}")
     else:
-        print("Currently in no guilds.")
+        bot_logger.info("Currently in no guilds.")
         
-    print("Bot is ready and listening for commands and scheduled tasks.")
+    bot_logger.info("Bot is ready and listening for commands and scheduled tasks.")
     
     # Start the background scheduler task
     if not hasattr(client, '_scheduler_task_started'): # Ensure it only starts once
         client._scheduler_task_started = True
         client.loop.create_task(background_scheduler())
-        print("Background scheduler started.")
+        bot_logger.info("Background scheduler started.")
 
 @client.event
 async def on_disconnect():
     """Clean up when bot disconnects"""
-    print("Bot disconnected. Cleaning up database connections...")
+    bot_logger.info("Bot disconnected. Cleaning up database connections...")
     await cleanup_db()
 
 # --- Error Handling for Slash Commands ---
@@ -647,7 +691,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message("You do not meet the requirements to use this command.", ephemeral=True)
     else:
         # Log the error for debugging
-        print(f"Unhandled slash command error: {type(error).__name__} - {error}")
+        bot_logger.error(f"Unhandled slash command error: {type(error).__name__} - {error}")
         # Inform the user generically
         if interaction.response.is_done():
             await interaction.followup.send("An unexpected error occurred while processing your command. Please try again later.", ephemeral=True)
@@ -657,16 +701,16 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # Run the bot
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
-        print("CRITICAL ERROR: BOT_TOKEN is not set in the environment variables or .env file.")
-        print("Please ensure your Discord Bot Token is correctly configured.")
+        bot_logger.critical("CRITICAL ERROR: BOT_TOKEN is not set in the environment variables or .env file.")
+        bot_logger.critical("Please ensure your Discord Bot Token is correctly configured.")
     else:
-        print("Starting bot...")
+        bot_logger.info("Starting bot...")
         try:
-            client.run(DISCORD_TOKEN)
+            client.run(DISCORD_TOKEN, log_handler=None)
         except discord.LoginFailure:
-            print("CRITICAL ERROR: Login Failure. The provided Discord Bot Token is invalid.")
-            print("Please verify your BOT_TOKEN.")
+            bot_logger.critical("CRITICAL ERROR: Login Failure. The provided Discord Bot Token is invalid.")
+            bot_logger.critical("Please verify your BOT_TOKEN.")
         except discord.PrivilegedIntentsRequired:
-            print("CRITICAL ERROR: Privileged Intents Required. Ensure your bot has the necessary intents enabled in the Discord Developer Portal.")
+            bot_logger.critical("CRITICAL ERROR: Privileged Intents Required. Ensure your bot has the necessary intents enabled in the Discord Developer Portal.")
         except Exception as e:
-            print(f"An unexpected critical error occurred while trying to run the bot: {type(e).__name__} - {e}")
+            bot_logger.critical(f"An unexpected critical error occurred while trying to run the bot: {type(e).__name__} - {e}")
