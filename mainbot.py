@@ -33,12 +33,16 @@ BIG_TECH_COMPANIES = [
     "openai", "anthropic", "google", "nvidia", "bloomberg", "snap",
     "meta", "apple", "amazon", "microsoft", "netflix", "tesla", "databricks", "figma", "roblox",
     "square", "block", "stripe", "airbnb", "uber", "lyft", "doordash", "instacart", "palantir",
-    "snowflake", "salesforce", "oracle", "sap", "adobe", "vmware", "ibm", "intel", "amd",
-    "qualcomm", "broadcom", "texas instruments", "cisco", "dell", "hp", "atlassian", "zoom",
-    "workday", "servicenow", "twilio", "shopify", "spotify", "pinterest", "twitter", "x",
+    "snowflake", "salesforce", "oracle", "sap", "adobe", "intel", "amd",
+    "qualcomm", "texas instruments", "cisco", "dell", "hp", "atlassian", "zoom",
+    "workday", "servicenow", "twilio", "shopify", "spotify", "pinterest", "twitter",
     "linkedin", "github", "robinhood", "coinbase", "jane street", "hudson river trading",
     "citadel", "two sigma", "jump trading", "drw", "akamai", "cloudflare", "mongodb",
-    "splunk", "reddit", "discord", "tiktok", "bytedance", "cruise", "waymo", "rivian", "lucid"
+    "splunk", "reddit", "discord", "tiktok", "bytedance", "waymo", "heygen", "waabi", "mistral", "perplexity",
+    "point72", "optiver", "imc trading", "tencent", "samsung", "tower research", "rippling", "cohere", "talos trading",
+    "kalshi", "neo", "capital one", "datadog", "ramp", "notion", "five rings", "epic games", "riot games",
+    "sony",
+    "x", # will be .startswith()
 ]
 
 # Emojis
@@ -277,10 +281,15 @@ def format_message(role, guild_id: int, guild_ping_roles: dict[int, int]):
     ping_role_id = guild_ping_roles.get(guild_id)
     if ping_role_id:
         should_ping = False
-        # Example: Ping for specific terms like "Winter 2026"
-        # You might want to make this list/logic configurable or more dynamic
-        if any(company.lower() in company_name_str.lower() for company in BIG_TECH_COMPANIES):
-            should_ping = True
+
+        for company in BIG_TECH_COMPANIES:
+            if company.lower() == "x":
+                if company_name_str.lower().startswith("x"):
+                    should_ping = True
+                    break
+            elif company.lower() in company_name_str.lower():
+                should_ping = True
+                break
         
         if should_ping:
             ping_str = f"<@&{ping_role_id}> "
@@ -314,8 +323,14 @@ def format_reactivation_message(role, guild_id: int, guild_ping_roles: dict[int,
         should_ping = False
         if "winter 2026" in term_str.lower(): # Consistent ping logic
              should_ping = True
-        if any(company.lower() in company_name_str.lower() for company in BIG_TECH_COMPANIES):
-            should_ping = True
+        for company in BIG_TECH_COMPANIES:
+            if company.lower() == "x":
+                if company_name_str.lower().startswith("x"):
+                    should_ping = True
+                    break
+            elif company.lower() in company_name_str.lower():
+                should_ping = True
+                break
         if should_ping:
             ping_str = f"<@&{ping_role_id}> "
 
@@ -404,34 +419,36 @@ async def combined_scheduled_task():
     print(f"Running scheduled check for both repos at {datetime.now()}")
     try:
         new_data = await fetch_json_from_url(JSON_URL_1)
-        if os.path.exists(PREVIOUS_DATA_FILE):
-            try:
-                with open(PREVIOUS_DATA_FILE, 'r', encoding='utf-8') as file:
-                    old_data = json.load(file)
-                print(f"Previous data loaded from {PREVIOUS_DATA_FILE}.")
-            except (FileNotFoundError, json.JSONDecodeError) as e:
-                print(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE}: {e}. Starting fresh.")
+        if new_data != []:
+            if os.path.exists(PREVIOUS_DATA_FILE):
+                try:
+                    with open(PREVIOUS_DATA_FILE, 'r', encoding='utf-8') as file:
+                        old_data = json.load(file)
+                    print(f"Previous data loaded from {PREVIOUS_DATA_FILE}.")
+                except (FileNotFoundError, json.JSONDecodeError) as e:
+                    print(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE}: {e}. Starting fresh.")
+                    old_data = []
+            else:
                 old_data = []
-        else:
-            old_data = []
-            print(f"No previous data found at {PREVIOUS_DATA_FILE}. Initializing.")
+                print(f"No previous data found at {PREVIOUS_DATA_FILE}. Initializing.")
 
-        await process_repo_updates(new_data, old_data, PREVIOUS_DATA_FILE, JSON_URL_1, is_second_repo=False)
+            await process_repo_updates(new_data, old_data, PREVIOUS_DATA_FILE, JSON_URL_1, is_second_repo=False)
         
         new_data_2 = await fetch_json_from_url(JSON_URL_2)
-        if os.path.exists(PREVIOUS_DATA_FILE_2):
-            try:
-                with open(PREVIOUS_DATA_FILE_2, 'r', encoding='utf-8') as file:
-                    old_data_2 = json.load(file)
-                print(f"Previous data loaded from {PREVIOUS_DATA_FILE_2}.")
-            except (FileNotFoundError, json.JSONDecodeError) as e:
-                print(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE_2}: {e}. Starting fresh.")
+        if new_data_2 != []:
+            if os.path.exists(PREVIOUS_DATA_FILE_2):
+                try:
+                    with open(PREVIOUS_DATA_FILE_2, 'r', encoding='utf-8') as file:
+                        old_data_2 = json.load(file)
+                    print(f"Previous data loaded from {PREVIOUS_DATA_FILE_2}.")
+                except (FileNotFoundError, json.JSONDecodeError) as e:
+                    print(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE_2}: {e}. Starting fresh.")
+                    old_data_2 = []
+            else:
                 old_data_2 = []
-        else:
-            old_data_2 = []
-            print(f"No previous data found at {PREVIOUS_DATA_FILE_2}. Initializing.")
+                print(f"No previous data found at {PREVIOUS_DATA_FILE_2}. Initializing.")
 
-        await process_repo_updates(new_data_2, old_data_2, PREVIOUS_DATA_FILE_2, JSON_URL_2, is_second_repo=True)
+            await process_repo_updates(new_data_2, old_data_2, PREVIOUS_DATA_FILE_2, JSON_URL_2, is_second_repo=True)
         
     except Exception as e:
         is_task_running = False
