@@ -1,4 +1,5 @@
 import json
+import re
 import os
 from datetime import datetime
 import schedule
@@ -387,7 +388,10 @@ async def send_discord_message(message_content: str, guild_id: int, channel_id: 
             channel_failure_counts[channel_key] = channel_failure_counts.get(channel_key, 0) + MAX_RETRIES # Mark as failed
             failed_channels.add(channel_key)
             return
-
+        # checking for regex of canada stuffs
+        x = re.findall("(CAN|Canada|ON|QC|BC|AB|MB|SK|NS|NB|NL|PE|NT|NU|YT|Toronto|Vancouver|Montreal|Ottawa|Calgary|Edmonton|Winnipeg|Halifax|Victoria)", message_content)
+        if len(x) == 0:
+            return
         await channel.send(message_content)
         bot_logger.debug(f"Successfully sent message to channel {channel_id} in guild {guild_id}")
         if channel_key in channel_failure_counts: # Reset on success
@@ -566,6 +570,63 @@ async def background_scheduler():
             bot_logger.debug(f"Peak Python memory (tracemalloc):    {peak_mem / 1024:.2f} KB")
             bot_logger.debug(f"Peak RSS (OS):                       {peak_rss_display:.2f} KB")
             bot_logger.debug("---------------------------------------------------")
+
+@tree.command(name="purge", description="Purge a given number of messages from user (Admin only).")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    user="The user whose messages to purge",
+    amount="Number of messages to purge from the user",
+    channel="The text channel to purge from. Leave empty to use current channel."
+)
+async def purge_command(interaction: discord.Interaction, user: discord.User, amount: int, channel: discord.TextChannel = None):
+    try:
+        # Use specified channel or default to current channel
+        target_channel = channel or interaction.channel
+        
+        # Defer the response since purging might take time
+        await interaction.response.defer(ephemeral=True)
+        
+        # Check if user has enough messages to purge
+        if amount <= 0:
+            await interaction.followup.send("Amount must be greater than 0.", ephemeral=True)
+            return
+        
+        # Define a check function to filter messages by user
+        def check(message):
+            return message.author == user
+        
+        # Purge messages from the specific user
+        deleted = await target_channel.purge(limit=None, check=check, before=None)
+        
+        # Limit to the requested amount
+        if len(deleted) > amount:
+            # If we deleted more than requested, we need to be more precise
+            # Let's do it differently - fetch and delete specific messages
+            deleted_count = 0
+            async for message in target_channel.history(limit=None):
+                if message.author == user and deleted_count < amount:
+                    await message.delete()
+                    deleted_count += 1
+                elif deleted_count >= amount:
+                    break
+            
+            await interaction.followup.send(
+                f"Successfully purged {deleted_count} messages from {user.mention} in {target_channel.mention}",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"Successfully purged {len(deleted)} messages from {user.mention} in {target_channel.mention}",
+                ephemeral=True
+            )
+            
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to delete messages in this channel.", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"HTTP error occurred: {e}", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error purging messages: {e}", ephemeral=True)
+
 
 # --- Slash Commands ---
 @tree.command(name="set_channel", description="Sets the notification channel for this guild (Admin only).")
