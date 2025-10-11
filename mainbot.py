@@ -74,12 +74,16 @@ BIG_TECH_COMPANIES = [
     "openai", "anthropic", "google", "nvidia", "bloomberg", "snap",
     "meta", "apple", "amazon", "microsoft", "netflix", "tesla", "databricks", "figma", "roblox",
     "square", "block", "stripe", "airbnb", "uber", "lyft", "doordash", "instacart", "palantir",
-    "snowflake", "salesforce", "oracle", "sap", "adobe", "vmware", "ibm", "intel", "amd",
-    "qualcomm", "broadcom", "texas instruments", "cisco", "dell", "hp", "atlassian", "zoom",
-    "workday", "servicenow", "twilio", "shopify", "spotify", "pinterest", "twitter", "x",
+    "snowflake", "salesforce", "oracle", "sap", "adobe", "intel", "amd",
+    "qualcomm", "texas instruments", "cisco", "dell", "hp", "atlassian", "zoom",
+    "workday", "servicenow", "twilio", "shopify", "spotify", "pinterest", "twitter",
     "linkedin", "github", "robinhood", "coinbase", "jane street", "hudson river trading",
     "citadel", "two sigma", "jump trading", "drw", "akamai", "cloudflare", "mongodb",
-    "splunk", "reddit", "discord", "tiktok", "bytedance", "cruise", "waymo", "rivian", "lucid"
+    "splunk", "reddit", "discord", "tiktok", "bytedance", "waymo", "heygen", "waabi", "mistral", "perplexity",
+    "point72", "optiver", "imc trading", "tencent", "samsung", "tower research", "rippling", "cohere", "talos trading",
+    "kalshi", "neo", "capital one", "datadog", "ramp", "notion", "five rings", "epic games", "riot games",
+    "sony",
+    "x", # will be .startswith()
 ]
 
 # Emojis
@@ -102,6 +106,111 @@ channel_failure_counts = {}
 
 # Global flag to track if scheduled task is running
 is_task_running = False
+
+seen_urls = set()
+
+# Global storage for Discord message IDs to enable message editing
+# Structure: role_message_map[guild_id][channel_id][role_id] = message_id
+role_message_map = {}
+
+def initialize_url_cache():
+    """Initialize the URL cache with existing URLs from previous data files"""
+    global seen_urls
+
+    data_files = [PREVIOUS_DATA_FILE, PREVIOUS_DATA_FILE_2]
+    urls_added = 0
+
+    for data_file in data_files:
+        if os.path.exists(data_file):
+            try:
+                with open(data_file, 'r', encoding='utf-8') as file:
+                    data = json.load(file)
+                    for role in data:
+                        url = role.get('url', '')
+                        if url:
+                            seen_urls.add(url)
+                            urls_added += 1
+                bot_logger.debug(f"Loaded {urls_added} URLs from {data_file} into cache")
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                bot_logger.warning(f"Error loading URLs from {data_file}: {e}")
+        else:
+            bot_logger.debug(f"Data file {data_file} not found, skipping cache initialization")
+
+    bot_logger.info(f"URL cache initialized with {len(seen_urls)} total URLs")
+
+def store_message_id(guild_id: int, channel_id: int, role_id: str, message_id: int):
+    """Store Discord message ID for a specific role in a guild/channel"""
+    if guild_id not in role_message_map:
+        role_message_map[guild_id] = {}
+    if channel_id not in role_message_map[guild_id]:
+        role_message_map[guild_id][channel_id] = {}
+    role_message_map[guild_id][channel_id][role_id] = message_id
+    bot_logger.debug(f"Stored message ID {message_id} for role {role_id} in guild {guild_id}, channel {channel_id}")
+
+def get_message_id(guild_id: int, channel_id: int, role_id: str) -> int | None:
+    """Retrieve Discord message ID for a specific role in a guild/channel"""
+    try:
+        return role_message_map[guild_id][channel_id][role_id]
+    except KeyError:
+        return None
+
+def remove_message_id(guild_id: int, channel_id: int, role_id: str):
+    """Remove Discord message ID for a specific role in a guild/channel"""
+    try:
+        del role_message_map[guild_id][channel_id][role_id]
+        bot_logger.debug(f"Removed message ID for role {role_id} in guild {guild_id}, channel {channel_id}")
+    except KeyError:
+        pass
+
+async def edit_discord_message(message_id: int, new_content: str, guild_id: int, channel_id: int):
+    """Edit an existing Discord message with new content"""
+    global failed_channels, channel_failure_counts
+
+    channel_key = f"{guild_id}:{channel_id}"
+
+    if channel_key in failed_channels:
+        bot_logger.debug(f"Skipping previously failed channel {channel_id} in guild {guild_id}")
+        return False
+
+    try:
+        channel = client.get_channel(channel_id)
+        if channel is None:
+            bot_logger.debug(f"Channel {channel_id} not in cache, attempting to fetch...")
+            channel = await client.fetch_channel(channel_id)
+
+        if not isinstance(channel, discord.TextChannel):
+            bot_logger.error(f"Error: Channel ID {channel_id} is not a text channel. Skipping.")
+            failed_channels.add(channel_key)
+            return False
+
+        message = await channel.fetch_message(message_id)
+        await message.edit(content=new_content)
+        bot_logger.debug(f"Successfully edited message {message_id} in channel {channel_id}, guild {guild_id}")
+
+        if channel_key in channel_failure_counts:
+            del channel_failure_counts[channel_key]
+        if channel_key in failed_channels:
+            failed_channels.remove(channel_key)
+
+        return True
+
+    except discord.NotFound:
+        bot_logger.warning(f"Message {message_id} not found in channel {channel_id}, guild {guild_id}. Will send new message.")
+        remove_message_id(guild_id, channel_id, "")
+        return False
+    except discord.Forbidden:
+        bot_logger.warning(f"No permission to edit message in channel {channel_id}, guild {guild_id}.")
+        failed_channels.add(channel_key)
+        return False
+    except Exception as e:
+        bot_logger.error(f"Error editing message {message_id} in channel {channel_id}, guild {guild_id}: {e}")
+        channel_failure_counts[channel_key] = channel_failure_counts.get(channel_key, 0) + 1
+
+        if channel_failure_counts.get(channel_key, 0) >= MAX_RETRIES:
+            bot_logger.warning(f"Channel {channel_id} in guild {guild_id} has failed {MAX_RETRIES} times, adding to failed channels.")
+            failed_channels.add(channel_key)
+
+        return False
 
 # --- SQLAlchemy Setup ---
 Base = declarative_base()
@@ -318,10 +427,15 @@ def format_message(role, guild_id: int, guild_ping_roles: dict[int, int]):
     ping_role_id = guild_ping_roles.get(guild_id)
     if ping_role_id:
         should_ping = False
-        # Example: Ping for specific terms like "Winter 2026"
-        # You might want to make this list/logic configurable or more dynamic
-        if any(company.lower() in company_name_str.lower() for company in BIG_TECH_COMPANIES):
-            should_ping = True
+
+        for company in BIG_TECH_COMPANIES:
+            if company.lower() == "x":
+                if company_name_str.lower().startswith("x"):
+                    should_ping = True
+                    break
+            elif company.lower() in company_name_str.lower():
+                should_ping = True
+                break
         
         if should_ping:
             ping_str = f"<@&{ping_role_id}> "
@@ -355,8 +469,14 @@ def format_reactivation_message(role, guild_id: int, guild_ping_roles: dict[int,
         should_ping = False
         if "winter 2026" in term_str.lower(): # Consistent ping logic
              should_ping = True
-        if any(company.lower() in company_name_str.lower() for company in BIG_TECH_COMPANIES):
-            should_ping = True
+        for company in BIG_TECH_COMPANIES:
+            if company.lower() == "x":
+                if company_name_str.lower().startswith("x"):
+                    should_ping = True
+                    break
+            elif company.lower() in company_name_str.lower():
+                should_ping = True
+                break
         if should_ping:
             ping_str = f"<@&{ping_role_id}> "
 
@@ -364,17 +484,67 @@ def format_reactivation_message(role, guild_id: int, guild_ping_roles: dict[int,
             f"[{title_str}]({url_str}) - Term: {term_emoji} {term_str}\n"
             f"Reactivated: {datetime.now().strftime('%b %d')}")
 
+def format_deactivated_embed_message(role):
+    """Format a message for editing an existing active message to show it's deactivated"""
+    company_name_str = role.get('company_name', 'N/A Company')
+    title_str = role.get('title', 'N/A Title')
+    url_str = role.get('url', '#')
+    location_str = ', '.join(role.get('locations', [])) if role.get('locations') else 'Not specified'
+    sponsorship_str = role.get('sponsorship', 'Not specified')
+    term_emoji, term_str = get_term_emoji_and_string(role)
+
+    return (f"{EMOJI_DEACTIVATED} **~~{company_name_str}~~** - ~~{title_str}~~\n"
+            f"~~[{title_str}]({url_str})~~\n"
+            f"**Location(s):** ~~{location_str}~~\n"
+            f"**Term:** {term_emoji} ~~{term_str}~~\n"
+            f"**Sponsorship:** ~~`{sponsorship_str}`~~\n"
+            f"**Posted:** ~~{datetime.now().strftime('%b %d')}~~\n"
+            f"❌ **This internship is no longer active**")
+
+def format_reactivated_embed_message(role, guild_id: int, guild_ping_roles: dict[int, int]):
+    """Format a message for editing an existing deactivated message to show it's reactivated"""
+    company_name_str = role.get('company_name', 'N/A Company')
+    title_str = role.get('title', 'N/A Title')
+    url_str = role.get('url', '#')
+    location_str = ', '.join(role.get('locations', [])) if role.get('locations') else 'Not specified'
+    sponsorship_str = role.get('sponsorship', 'Not specified')
+    term_emoji, term_str = get_term_emoji_and_string(role)
+
+    ping_str = ""
+    ping_role_id = guild_ping_roles.get(guild_id)
+    if ping_role_id:
+        should_ping = False
+
+        for company in BIG_TECH_COMPANIES:
+            if company.lower() == "x":
+                if company_name_str.lower().startswith("x"):
+                    should_ping = True
+                    break
+            elif company.lower() in company_name_str.lower():
+                should_ping = True
+                break
+
+        if should_ping:
+            ping_str = f"<@&{ping_role_id}> "
+
+    return (f"{EMOJI_REACTIVATED} **{company_name_str}** just posted a new internship! {ping_str}\n"
+            f"[{title_str}]({url_str})\n"
+            f"**Location(s):** {location_str}\n"
+            f"**Term:** {term_emoji} {term_str}\n"
+            f"**Sponsorship:** `{sponsorship_str}`\n"
+            f"**Posted:** {datetime.now().strftime('%b %d')}\n"
+            f"🔄 **This internship is active again!**")
+
 
 # --- Discord Interaction ---
-async def send_discord_message(message_content: str, guild_id: int, channel_id: int):
-    global failed_channels, channel_failure_counts # Ensure we're modifying the global sets/dicts
-    
-    # Use a composite key for failed channels since we now track by guild+channel
+async def send_discord_message(message_content: str, guild_id: int, channel_id: int, role_id: str = None):
+    global failed_channels, channel_failure_counts
+
     channel_key = f"{guild_id}:{channel_id}"
-    
+
     if channel_key in failed_channels:
         bot_logger.debug(f"Skipping previously failed channel ID {channel_id} in guild {guild_id}")
-        return
+        return None
 
     try:
         channel = client.get_channel(channel_id)
@@ -382,38 +552,44 @@ async def send_discord_message(message_content: str, guild_id: int, channel_id: 
             bot_logger.debug(f"Channel {channel_id} not in cache, attempting to fetch...")
             channel = await client.fetch_channel(channel_id)
 
-        if not isinstance(channel, discord.TextChannel): # Check if it's a text channel
+        if not isinstance(channel, discord.TextChannel):
             bot_logger.error(f"Error: Channel ID {channel_id} is not a text channel. Skipping.")
-            # Optionally, add to failed_channels if this is a persistent issue type
-            channel_failure_counts[channel_key] = channel_failure_counts.get(channel_key, 0) + MAX_RETRIES # Mark as failed
             failed_channels.add(channel_key)
-            return
+            return None
         # checking for regex of canada stuffs
         x = re.findall("(CAN|Canada|ON|QC|BC|AB|MB|SK|NS|NB|NL|PE|NT|NU|YT|Toronto|Vancouver|Montreal|Ottawa|Calgary|Edmonton|Winnipeg|Halifax|Victoria)", message_content)
         if len(x) == 0:
             return
-        await channel.send(message_content)
+        message = await channel.send(message_content)
+
+        if role_id:
+            store_message_id(guild_id, channel_id, role_id, message.id)
+
         bot_logger.debug(f"Successfully sent message to channel {channel_id} in guild {guild_id}")
-        if channel_key in channel_failure_counts: # Reset on success
+
+        if channel_key in channel_failure_counts:
             del channel_failure_counts[channel_key]
-        if channel_key in failed_channels: # Also remove from perm failed if successful now
-             failed_channels.remove(channel_key)
-        await asyncio.sleep(1)  # Rate limiting
+        if channel_key in failed_channels:
+            failed_channels.remove(channel_key)
+
+        await asyncio.sleep(1)
+        return message.id
 
     except discord.NotFound:
         bot_logger.warning(f"Channel {channel_id} not found in guild {guild_id}.")
         channel_failure_counts[channel_key] = channel_failure_counts.get(channel_key, 0) + 1
     except discord.Forbidden:
         bot_logger.warning(f"No permission for channel {channel_id} in guild {guild_id}.")
-        failed_channels.add(channel_key) # Add to permanent failures for permission issues
+        failed_channels.add(channel_key)
     except Exception as e:
         bot_logger.error(f"Error sending message to channel {channel_id} in guild {guild_id}: {e}")
         channel_failure_counts[channel_key] = channel_failure_counts.get(channel_key, 0) + 1
     finally:
-        # Add to failed_channels if retries exceeded
         if channel_failure_counts.get(channel_key, 0) >= MAX_RETRIES:
-            bot_logger.warning(f"Channel {channel_id} in guild {guild_id} has failed {MAX_RETRIES} times, adding to failed channels for this session.")
+            bot_logger.warning(f"Channel {channel_id} in guild {guild_id} has failed {MAX_RETRIES} times, adding to failed channels.")
             failed_channels.add(channel_key)
+
+    return None
 
 
 async def send_messages_to_all_configured_channels(message_content: str, guild_ping_roles: dict[int, int] = None):
@@ -427,13 +603,46 @@ async def send_messages_to_all_configured_channels(message_content: str, guild_p
 
     # Filter out failed channels
     active_channel_configs = [
-        (guild_id, channel_id) for guild_id, channel_id in channel_configs 
+        (guild_id, channel_id) for guild_id, channel_id in channel_configs
         if f"{guild_id}:{channel_id}" not in failed_channels
     ]
-    
+
     tasks = [send_discord_message(message_content, guild_id, channel_id) for guild_id, channel_id in active_channel_configs]
     if tasks:
         await asyncio.gather(*tasks)
+
+async def edit_or_send_message(role, guild_id: int, channel_id: int, guild_ping_roles: dict[int, int], is_deactivation: bool):
+    """Edit existing message if possible, otherwise send new message"""
+    role_id = role.get('id', '')
+
+    if not role_id:
+        if is_deactivation:
+            message = format_deactivation_message(role)
+        else:
+            message = format_reactivation_message(role, guild_id, guild_ping_roles)
+        await send_discord_message(message, guild_id, channel_id)
+        return
+
+    existing_message_id = get_message_id(guild_id, channel_id, role_id)
+
+    if existing_message_id:
+        if is_deactivation:
+            new_content = format_deactivated_embed_message(role)
+        else:
+            new_content = format_reactivated_embed_message(role, guild_id, guild_ping_roles)
+
+        success = await edit_discord_message(existing_message_id, new_content, guild_id, channel_id)
+
+        if success:
+            bot_logger.debug(f"Successfully edited message for role {role_id} in guild {guild_id}")
+            return
+
+    bot_logger.debug(f"Could not edit message for role {role_id}, sending new message")
+    if is_deactivation:
+        message = format_deactivation_message(role)
+    else:
+        message = format_reactivation_message(role, guild_id, guild_ping_roles)
+    await send_discord_message(message, guild_id, channel_id)
 
 # --- Scheduled Tasks ---
 async def combined_scheduled_task():
@@ -448,34 +657,36 @@ async def combined_scheduled_task():
     bot_logger.debug(f"Running scheduled check for both repos at {datetime.now()}")
     try:
         new_data = await fetch_json_from_url(JSON_URL_1)
-        if os.path.exists(PREVIOUS_DATA_FILE):
-            try:
-                with open(PREVIOUS_DATA_FILE, 'r', encoding='utf-8') as file:
-                    old_data = json.load(file)
-                bot_logger.debug(f"Previous data loaded from {PREVIOUS_DATA_FILE}.")
-            except (FileNotFoundError, json.JSONDecodeError) as e:
-                bot_logger.error(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE}: {e}. Starting fresh.")
+        if new_data != []:
+            if os.path.exists(PREVIOUS_DATA_FILE):
+                try:
+                    with open(PREVIOUS_DATA_FILE, 'r', encoding='utf-8') as file:
+                        old_data = json.load(file)
+                    bot_logger.debug(f"Previous data loaded from {PREVIOUS_DATA_FILE}.")
+                except (FileNotFoundError, json.JSONDecodeError) as e:
+                    bot_logger.error(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE}: {e}. Starting fresh.")
+                    old_data = []
+            else:
                 old_data = []
-        else:
-            old_data = []
-            bot_logger.info(f"No previous data found at {PREVIOUS_DATA_FILE}. Initializing.")
+                bot_logger.info(f"No previous data found at {PREVIOUS_DATA_FILE}. Initializing.")
 
-        await process_repo_updates(new_data, old_data, PREVIOUS_DATA_FILE, JSON_URL_1, is_second_repo=False)
+            await process_repo_updates(new_data, old_data, PREVIOUS_DATA_FILE, JSON_URL_1, is_second_repo=False)
         
         new_data_2 = await fetch_json_from_url(JSON_URL_2)
-        if os.path.exists(PREVIOUS_DATA_FILE_2):
-            try:
-                with open(PREVIOUS_DATA_FILE_2, 'r', encoding='utf-8') as file:
-                    old_data_2 = json.load(file)
-                bot_logger.debug(f"Previous data loaded from {PREVIOUS_DATA_FILE_2}.")
-            except (FileNotFoundError, json.JSONDecodeError) as e:
-                bot_logger.error(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE_2}: {e}. Starting fresh.")
+        if new_data_2 != []:
+            if os.path.exists(PREVIOUS_DATA_FILE_2):
+                try:
+                    with open(PREVIOUS_DATA_FILE_2, 'r', encoding='utf-8') as file:
+                        old_data_2 = json.load(file)
+                    bot_logger.debug(f"Previous data loaded from {PREVIOUS_DATA_FILE_2}.")
+                except (FileNotFoundError, json.JSONDecodeError) as e:
+                    bot_logger.error(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE_2}: {e}. Starting fresh.")
+                    old_data_2 = []
+            else:
                 old_data_2 = []
-        else:
-            old_data_2 = []
-            bot_logger.info(f"No previous data found at {PREVIOUS_DATA_FILE_2}. Initializing.")
+                bot_logger.info(f"No previous data found at {PREVIOUS_DATA_FILE_2}. Initializing.")
 
-        await process_repo_updates(new_data_2, old_data_2, PREVIOUS_DATA_FILE_2, JSON_URL_2, is_second_repo=True)
+            await process_repo_updates(new_data_2, old_data_2, PREVIOUS_DATA_FILE_2, JSON_URL_2, is_second_repo=True)
         
     except Exception as e:
         is_task_running = False
@@ -521,23 +732,41 @@ async def process_repo_updates(new_data, old_data, previous_data_file, repo_url,
     loop = client.loop if client and client.loop.is_running() else asyncio.get_event_loop()
 
     for role in new_roles:
-        channel_configs = await get_all_channels_from_db()
-        for guild_id, channel_id in channel_configs:
-            if f"{guild_id}:{channel_id}" not in failed_channels:
-                message = format_message(role, guild_id, guild_ping_roles)
-                loop.create_task(send_discord_message(message, guild_id, channel_id))
-
-    for role in deactivated_roles:
-        message = format_deactivation_message(role)
-        loop.create_task(send_messages_to_all_configured_channels(message, guild_ping_roles))
-
-    if is_second_repo:
-        for role in reactivated_roles:
+        role_url = role.get('url', '')
+        if role_url and role_url not in seen_urls:
             channel_configs = await get_all_channels_from_db()
             for guild_id, channel_id in channel_configs:
                 if f"{guild_id}:{channel_id}" not in failed_channels:
-                    message = format_reactivation_message(role, guild_id, guild_ping_roles)
-                    loop.create_task(send_discord_message(message, guild_id, channel_id))
+                    message = format_message(role, guild_id, guild_ping_roles)
+                    role_id = role.get('id', '')
+                    loop.create_task(send_discord_message(message, guild_id, channel_id, role_id))
+            seen_urls.add(role_url)
+            bot_logger.debug(f"Added URL to cache: {role_url}")
+        elif role_url in seen_urls:
+            bot_logger.debug(f"Skipping duplicate URL: {role_url}")
+        else:
+            bot_logger.debug(f"Role missing URL, skipping cache check: {role.get('company_name', 'Unknown')} - {role.get('title', 'Unknown')}")
+
+    for role in deactivated_roles:
+        channel_configs = await get_all_channels_from_db()
+        for guild_id, channel_id in channel_configs:
+            if f"{guild_id}:{channel_id}" not in failed_channels:
+                loop.create_task(edit_or_send_message(role, guild_id, channel_id, guild_ping_roles, is_deactivation=True))
+
+    if is_second_repo:
+        for role in reactivated_roles:
+            role_url = role.get('url', '')
+            if role_url and role_url not in seen_urls:
+                channel_configs = await get_all_channels_from_db()
+                for guild_id, channel_id in channel_configs:
+                    if f"{guild_id}:{channel_id}" not in failed_channels:
+                        loop.create_task(edit_or_send_message(role, guild_id, channel_id, guild_ping_roles, is_deactivation=False))
+                seen_urls.add(role_url)
+                bot_logger.debug(f"Added reactivated URL to cache: {role_url}")
+            elif role_url in seen_urls:
+                bot_logger.debug(f"Skipping duplicate reactivated URL: {role_url}")
+            else:
+                bot_logger.debug(f"Reactivated role missing URL, skipping cache check: {role.get('company_name', 'Unknown')} - {role.get('title', 'Unknown')}")
 
     try:
         with open(previous_data_file, 'w', encoding='utf-8') as file:
@@ -700,6 +929,53 @@ async def get_ping_role_cmd(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"Error getting ping role: {e}", ephemeral=True)
 
+@tree.command(name="url_cache_stats", description="Shows URL cache statistics (Admin only).")
+async def url_cache_stats_cmd(interaction: discord.Interaction):
+    try:
+        cache_size = len(seen_urls)
+        await interaction.response.send_message(f"URL Cache Statistics:\n• Total cached URLs: {cache_size}\n• Cache is active and preventing duplicate messages.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Error getting cache stats: {e}", ephemeral=True)
+
+@tree.command(name="clear_url_cache", description="Clears the URL cache - use with caution as it may allow duplicate messages (Admin only).")
+async def clear_url_cache_cmd(interaction: discord.Interaction):
+    try:
+        global seen_urls
+        cache_size_before = len(seen_urls)
+        seen_urls.clear()
+        initialize_url_cache()
+        cache_size_after = len(seen_urls)
+        await interaction.response.send_message(f"URL cache cleared and reinitialized.\n• Cleared {cache_size_before} URLs\n• Cache now contains {cache_size_after} URLs from existing data files.", ephemeral=True)
+        bot_logger.info(f"URL cache cleared by {interaction.user} (ID: {interaction.user.id}) in guild {interaction.guild.id}")
+    except Exception as e:
+        await interaction.response.send_message(f"Error clearing cache: {e}", ephemeral=True)
+
+@tree.command(name="message_cache_stats", description="Shows message ID cache statistics (Admin only).")
+async def message_cache_stats_cmd(interaction: discord.Interaction):
+    try:
+        total_guilds = len(role_message_map)
+        total_messages = sum(
+            len(channels) for guild in role_message_map.values()
+            for channels in guild.values()
+        )
+        await interaction.response.send_message(f"Message ID Cache Statistics:\n• Total guilds with cached messages: {total_guilds}\n• Total cached message IDs: {total_messages}\n• Cache enables message editing for status changes.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Error getting cache stats: {e}", ephemeral=True)
+
+@tree.command(name="clear_message_cache", description="Clears the message ID cache - will prevent message editing until new messages are sent (Admin only).")
+async def clear_message_cache_cmd(interaction: discord.Interaction):
+    try:
+        global role_message_map
+        cache_size_before = sum(
+            len(channels) for guild in role_message_map.values()
+            for channels in guild.values()
+        )
+        role_message_map.clear()
+        await interaction.response.send_message(f"Message ID cache cleared.\n• Cleared {cache_size_before} message IDs\n• Future status changes will send new messages instead of editing.", ephemeral=True)
+        bot_logger.info(f"Message ID cache cleared by {interaction.user} (ID: {interaction.user.id}) in guild {interaction.guild.id}")
+    except Exception as e:
+        await interaction.response.send_message(f"Error clearing message cache: {e}", ephemeral=True)
+
 # --- Bot Event Handlers ---
 async def cleanup_db():
     """Properly close the database engine"""
@@ -710,24 +986,26 @@ async def cleanup_db():
 async def on_ready():
     bot_logger.info(f"Preparing bot: {client.user}...")
     await init_db() # Initialize DB on startup
-    
+
+    initialize_url_cache()
+
     # Sync slash commands. This can be done globally or per-guild.
     # For simplicity, global sync. For faster updates during dev, sync to a specific guild.
     # await tree.sync(guild=discord.Object(id=DISCORD_GUILD_ID)) # Example for guild-specific sync
-    await tree.sync() 
-    
+    await tree.sync()
+
     bot_logger.info(f"Logged in as {client.user} (ID: {client.user.id})")
     bot_logger.info("Command tree synced.")
-    
+
     # List guilds the bot is in
     guild_names = [guild.name for guild in client.guilds]
     if guild_names:
         bot_logger.info(f"Currently in guilds: {', '.join(guild_names)}")
     else:
         bot_logger.info("Currently in no guilds.")
-        
+
     bot_logger.info("Bot is ready and listening for commands and scheduled tasks.")
-    
+
     # Start the background scheduler task
     if not hasattr(client, '_scheduler_task_started'): # Ensure it only starts once
         client._scheduler_task_started = True
