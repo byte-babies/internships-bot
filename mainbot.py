@@ -62,8 +62,10 @@ bot_logger.addHandler(console_handler)
 # Constants
 JSON_URL_1 = 'https://raw.githubusercontent.com/vanshb03/Summer2026-Internships/refs/heads/dev/.github/scripts/listings.json'
 JSON_URL_2 = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2025-Internships/refs/heads/dev/.github/scripts/listings.json'
+JSON_URL_3 = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/refs/heads/dev/.github/scripts/listings.json'
 PREVIOUS_DATA_FILE = 'previous_data.json'
 PREVIOUS_DATA_FILE_2 = 'previous_data_simplify.json'
+PREVIOUS_DATA_FILE_3 = 'previous_data_simplify2.json'
 
 DISCORD_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_FILE = 'bot_config.db'
@@ -117,7 +119,7 @@ def initialize_url_cache():
     """Initialize the URL cache with existing URLs from previous data files"""
     global seen_urls
 
-    data_files = [PREVIOUS_DATA_FILE, PREVIOUS_DATA_FILE_2]
+    data_files = [PREVIOUS_DATA_FILE, PREVIOUS_DATA_FILE_2, PREVIOUS_DATA_FILE_3]
     urls_added = 0
 
     for data_file in data_files:
@@ -467,8 +469,6 @@ def format_reactivation_message(role, guild_id: int, guild_ping_roles: dict[int,
     ping_role_id = guild_ping_roles.get(guild_id)
     if ping_role_id:
         should_ping = False
-        if "winter 2026" in term_str.lower(): # Consistent ping logic
-             should_ping = True
         for company in BIG_TECH_COMPANIES:
             if company.lower() == "x":
                 if company_name_str.lower().startswith("x"):
@@ -539,7 +539,6 @@ def format_reactivated_embed_message(role, guild_id: int, guild_ping_roles: dict
 # --- Discord Interaction ---
 async def send_discord_message(message_content: str, guild_id: int, channel_id: int, role_id: str = None):
     global failed_channels, channel_failure_counts
-
     channel_key = f"{guild_id}:{channel_id}"
 
     if channel_key in failed_channels:
@@ -617,7 +616,8 @@ async def edit_or_send_message(role, guild_id: int, channel_id: int, guild_ping_
 
     if not role_id:
         if is_deactivation:
-            message = format_deactivation_message(role)
+            pass
+            #message = format_deactivation_message(role)
         else:
             message = format_reactivation_message(role, guild_id, guild_ping_roles)
         await send_discord_message(message, guild_id, channel_id)
@@ -687,6 +687,22 @@ async def combined_scheduled_task():
                 bot_logger.info(f"No previous data found at {PREVIOUS_DATA_FILE_2}. Initializing.")
 
             await process_repo_updates(new_data_2, old_data_2, PREVIOUS_DATA_FILE_2, JSON_URL_2, is_second_repo=True)
+        
+        new_data_3 = await fetch_json_from_url(JSON_URL_3)
+        if new_data_3 != []:
+            if os.path.exists(PREVIOUS_DATA_FILE_3):
+                try:
+                    with open(PREVIOUS_DATA_FILE_3, 'r', encoding='utf-8') as file:
+                        old_data_3 = json.load(file)
+                    bot_logger.debug(f"Previous data loaded from {PREVIOUS_DATA_FILE_3}.")
+                except (FileNotFoundError, json.JSONDecodeError) as e:
+                    bot_logger.error(f"Error reading or decoding previous data file {PREVIOUS_DATA_FILE_3}: {e}. Starting fresh.")
+                    old_data_3 = []
+            else:
+                old_data_3 = []
+                bot_logger.info(f"No previous data found at {PREVIOUS_DATA_FILE_3}. Initializing.")
+
+            await process_repo_updates(new_data_3, old_data_3, PREVIOUS_DATA_FILE_3, JSON_URL_3, is_second_repo=True)
         
     except Exception as e:
         is_task_running = False

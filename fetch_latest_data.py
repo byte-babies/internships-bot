@@ -22,8 +22,10 @@ load_dotenv()
 
 JSON_URL_1 = 'https://raw.githubusercontent.com/vanshb03/Summer2026-Internships/refs/heads/dev/.github/scripts/listings.json'
 JSON_URL_2 = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2025-Internships/refs/heads/dev/.github/scripts/listings.json'
+JSON_URL_3 = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/refs/heads/dev/.github/scripts/listings.json'
 PREVIOUS_DATA_FILE = 'previous_data.json'
 PREVIOUS_DATA_FILE_2 = 'previous_data_simplify.json'
+PREVIOUS_DATA_FILE_3 = 'previous_data_simplify2.json'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,6 +97,14 @@ async def update_data_files():
     else:
         logger.error("Failed to fetch data from second source")
         success2 = False
+    
+    logger.info("Updating third data source...")
+    data3 = await fetch_json_from_url(JSON_URL_3)
+    if data3:
+        success3 = save_json_data(data3, PREVIOUS_DATA_FILE_3)
+    else:
+        logger.error("Failed to fetch data from third source")
+        success3 = False
 
     end_time = datetime.now()
     duration = end_time - start_time
@@ -105,8 +115,9 @@ async def update_data_files():
     logger.info(f"Duration: {duration.total_seconds():.2f} seconds")
     logger.info(f"Source 1: {'Success' if success1 else 'Failed'}")
     logger.info(f"Source 2: {'Success' if success2 else 'Failed'}")
+    logger.info(f"Source 3: {'Success' if success3 else 'Failed'}")
 
-    if success1 and success2:
+    if success1 and success2 and success3:
         logger.info("All data files updated successfully!")
         return True
     else:
@@ -118,7 +129,7 @@ def print_file_stats():
     logger.info("\nDATA FILE STATISTICS:")
     logger.info("-" * 30)
 
-    for file_path in [PREVIOUS_DATA_FILE, PREVIOUS_DATA_FILE_2]:
+    for file_path in [PREVIOUS_DATA_FILE, PREVIOUS_DATA_FILE_2, PREVIOUS_DATA_FILE_3]:
         if os.path.exists(file_path):
             try:
                 with open(file_path, 'r', encoding='utf-8') as file:
