@@ -559,6 +559,9 @@ async def send_discord_message(message_content: str, guild_id: int, channel_id: 
         x = re.findall("(CAN|Canada|ON|QC|BC|AB|MB|SK|NS|NB|NL|PE|NT|NU|YT|Toronto|Vancouver|Montreal|Ottawa|Calgary|Edmonton|Winnipeg|Halifax|Victoria)", message_content)
         if len(x) == 0:
             return
+        x = re.findall("(Deactivated)|(Hexagon AB)", message_content)
+        if len(x) >= 1:
+            return
         message = await channel.send(message_content)
 
         if role_id:
@@ -616,7 +619,7 @@ async def edit_or_send_message(role, guild_id: int, channel_id: int, guild_ping_
 
     if not role_id:
         if is_deactivation:
-            pass
+            return
             #message = format_deactivation_message(role)
         else:
             message = format_reactivation_message(role, guild_id, guild_ping_roles)
@@ -639,7 +642,8 @@ async def edit_or_send_message(role, guild_id: int, channel_id: int, guild_ping_
 
     bot_logger.debug(f"Could not edit message for role {role_id}, sending new message")
     if is_deactivation:
-        message = format_deactivation_message(role)
+        return
+        #message = format_deactivation_message(role)
     else:
         message = format_reactivation_message(role, guild_id, guild_ping_roles)
     await send_discord_message(message, guild_id, channel_id)
